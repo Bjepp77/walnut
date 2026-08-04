@@ -148,9 +148,14 @@ def _make_mlx(model: str):
     repo = model_name_for(model, MLX)
 
     def run(audio, language, initial_prompt):
+        # condition_on_previous_text feeds each chunk's output back in as
+        # decoder context. On short dictation clips it buys nothing, and it's
+        # what lets one stutter snowball into "...going to see if I'm going
+        # to see if..." repeated forever. Off, a bad chunk stays contained.
         result = mlx_whisper.transcribe(
             audio, path_or_hf_repo=repo,
-            language=language or None, initial_prompt=initial_prompt)
+            language=language or None, initial_prompt=initial_prompt,
+            condition_on_previous_text=False)
         return result["text"].strip()
 
     return run
@@ -174,8 +179,12 @@ def _make_faster(model: str):
         cpu_threads=4 if intel else 0)  # 0 = let ctranslate2 decide
 
     def run(audio, language, initial_prompt):
+        # Same repetition-loop guard as the MLX path, plus VAD so trailing
+        # silence isn't handed to the decoder (silence is the usual trigger
+        # for hallucinated repeats).
         segments, _ = engine.transcribe(
-            audio, language=language or None, initial_prompt=initial_prompt)
+            audio, language=language or None, initial_prompt=initial_prompt,
+            condition_on_previous_text=False, vad_filter=True)
         return "".join(s.text for s in segments).strip()
 
     return run
