@@ -95,3 +95,45 @@ def test_done_file_never_reprocessed(tmp_path, monkeypatch):
     watch.scan_once(seen, done)
     assert len(calls) == 1                # done, not repeated
     assert watch.load_done(tmp_path / "state.json") == done
+
+
+def test_failing_file_moved_to_failed_after_3_attempts(tmp_path, monkeypatch):
+    folder = tmp_path / "in"
+    folder.mkdir()
+    src = _wav(folder / "bad.wav", 1)
+    monkeypatch.setattr(watch, "WATCH_DIR", folder)
+    monkeypatch.setattr(watch, "STATE", tmp_path / "state.json")
+    calls = []
+
+    def boom(p, **k):
+        calls.append(p)
+        raise RuntimeError("decoder exploded")
+
+    monkeypatch.setattr(watch, "process", boom)
+    seen, done, fails = {}, set(), {}
+    watch.scan_once(seen, done, fails)    # first sighting: not stable yet
+    for v in list(seen):
+        seen[v] = (seen[v][0], 0.0)
+    for _ in range(2):
+        watch.scan_once(seen, done, fails)
+    assert len(calls) == 2 and src.exists()   # still retrying
+    watch.scan_once(seen, done, fails)
+    assert len(calls) == 3
+    moved = folder / "failed" / "bad.wav"
+    assert not src.exists() and moved.exists()  # moved, not deleted
+    err = (folder / "failed" / "bad.wav.error.txt").read_text()
+    assert "decoder exploded" in err and "3 attempts" in err
+    watch.scan_once(seen, done, fails)
+    assert len(calls) == 3                # failed/ is not rescanned
+    assert done == set() and fails == {}
+
+
+def test_quarantine_keeps_earlier_failure_of_same_name(tmp_path):
+    (tmp_path / "failed").mkdir()
+    (tmp_path / "failed" / "x.m4a").write_text("old")
+    p = tmp_path / "x.m4a"
+    p.write_text("new")
+    dest = watch.quarantine(p, "err")
+    assert dest.name == "x-1.m4a" and dest.read_text() == "new"
+    assert (tmp_path / "failed" / "x.m4a").read_text() == "old"
+    assert (tmp_path / "failed" / "x-1.m4a.error.txt").read_text() == "err"

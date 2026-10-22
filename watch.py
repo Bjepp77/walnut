@@ -6,6 +6,8 @@
 
 Skips iCloud placeholders (.name.icloud), hidden files, files still growing,
 and anything already done (state file keyed by name+size+mtime).
+A file that fails MAX_ATTEMPTS times is moved (never deleted) to failed/
+beside it, with a NAME.error.txt holding the last error.
 Does NOT file reminders or events: it only runs `audio_digest.py chunk`; the
 agent-run audio-digest skill does the rest.
 """
@@ -15,9 +17,11 @@ import argparse
 import datetime as dt
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
+import traceback
 from pathlib import Path
 
 import file_mode
@@ -28,6 +32,7 @@ STATE = Path("~/.walnut/file_mode_done.json").expanduser()
 DIGEST = Path("~/Work/tools/audio_digest.py").expanduser()
 POLL_SECONDS = 15
 STABLE_SECONDS = 20
+MAX_ATTEMPTS = 3
 
 
 def file_key(p: Path) -> str:
@@ -93,10 +98,25 @@ def process(p: Path, out_dir: Path | None = None, run=None, handoff: bool = True
     return out
 
 
-def scan_once(seen: dict, done: set[str], **kw) -> list[Path]:
+def quarantine(p: Path, err: str) -> Path:
+    """Move a failing file to failed/ beside it (never delete) with NAME.error.txt."""
+    dest_dir = p.parent / "failed"
+    dest_dir.mkdir(exist_ok=True)
+    dest, n = dest_dir / p.name, 1
+    while dest.exists():  # keep an earlier failure of the same name
+        dest, n = dest_dir / f"{p.stem}-{n}{p.suffix}", n + 1
+    shutil.move(str(p), str(dest))
+    dest.with_name(dest.name + ".error.txt").write_text(err)
+    return dest
+
+
+def scan_once(seen: dict, done: set[str], fails: dict | None = None, **kw) -> list[Path]:
+    """fails maps file key -> attempts so far; pass the same dict across scans."""
+    fails = {} if fails is None else fails
     made = []
     now = time.time()
     for p in candidates():
+        key = None
         try:
             key = file_key(p)
             if key in done or not is_stable(p, seen, now):
@@ -104,8 +124,21 @@ def scan_once(seen: dict, done: set[str], **kw) -> list[Path]:
             made.append(process(p, **kw))
             done.add(key)
             save_done(done)
+            fails.pop(key, None)
         except Exception as e:  # one bad file must not stop the watcher
             print(f"walnut watch: {p.name}: {e}", file=sys.stderr)
+            if key is None:
+                continue
+            fails[key] = fails.get(key, 0) + 1
+            if fails[key] >= MAX_ATTEMPTS:
+                err = (f"walnut watch gave up on {p.name} after {fails[key]} attempts "
+                       f"({dt.datetime.now():%Y-%m-%d %H:%M})\n\n{traceback.format_exc()}")
+                try:
+                    dest = quarantine(p, err)
+                    fails.pop(key, None)
+                    print(f"walnut watch: moved {p.name} to {dest}", file=sys.stderr)
+                except OSError as qe:
+                    print(f"walnut watch: could not move {p.name}: {qe}", file=sys.stderr)
     return made
 
 
@@ -118,13 +151,14 @@ def main() -> None:
         print(process(Path(a.file).expanduser()))
         return
     seen: dict = {}
+    fails: dict = {}
     done = load_done()
     while True:
-        scan_once(seen, done)
+        scan_once(seen, done, fails)
         if a.once:
             # --once still needs a stability window: second pass after STABLE_SECONDS
             time.sleep(STABLE_SECONDS + 1)
-            scan_once(seen, done)
+            scan_once(seen, done, fails)
             return
         time.sleep(POLL_SECONDS)
 
