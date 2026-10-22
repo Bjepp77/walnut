@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.bjepp.walnut-watch</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/brandonjeppson/.local/venvs/walnut/bin/python</string>
+    <string>-u</string>
+    <string>/Users/brandonjeppson/MegaMind/Claude_Cowork/Projects/walnut/watch.py</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/brandonjeppson/MegaMind/Claude_Cowork/Projects/walnut</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>60</integer>
+  <key>ProcessType</key><string>Background</string>
+  <key>StandardOutPath</key><string>/Users/brandonjeppson/Library/Logs/walnut-watch.log</string>
+  <key>StandardErrorPath</key><string>/Users/brandonjeppson/Library/Logs/walnut-watch.log</string>
+</dict>
+</plist>
