@@ -248,3 +248,27 @@ macOS — Walnut uses the built-in `say` and `afplay`. Python 3.12 or 3.13, whic
 [MIT](LICENSE). Take it, change it, ship it.
 
 <div align="center"><sub>❦</sub></div>
+
+## File mode (audio files to timestamped transcripts)
+
+Drop an audio file (m4a, mp3, wav, mp4, ...) in the iCloud folder
+`~/Library/Mobile Documents/com~apple~CloudDocs/Tray Audio` and run
+`uv run watch.py` (loops) or `uv run watch.py --once`. `uv run watch.py FILE`
+does one file now.
+
+- Decodes with PyAV in fixed 120 s chunks (`file_mode.iter_audio_chunks`, an
+  iterator of `(offset_seconds, float32 16 kHz mono)`), so a v2 live source can
+  feed the same `transcribe_chunks`.
+- Writes `~/MegaMind/Resources/raw/audio-transcripts/<YYYY-MM-DD_HHMM_slug>.md`
+  with a `Title:`/`Date:`/`Source:` header, a `====` rule, then `[HH:MM:SS] text`.
+- Then runs `python3 ~/Work/tools/audio_digest.py chunk <md>` and prints its JSON.
+  Filing tasks and events is left to the `audio-digest` skill.
+- Skips iCloud `.icloud` placeholders, hidden files and files still growing; done
+  files are remembered in `~/.walnut/file_mode_done.json`.
+- Benchmark (M-series, large-v3-turbo, 32.3 min file): 120 s chunks 31.5 s wall,
+  1.9 GB peak RSS (the model, not the audio; decode alone is 82 MB, 1.1 s).
+  300 s chunks were slightly faster (28.5 s) but dropped ~10% of segments on the
+  test audio, so 120 s it is.
+- Not in v1: speaker labels. v2 option: pyannote diarization (needs torch, a
+  Hugging Face token and a gated model license). Decode/chunk approach borrowed
+  from Alex Sisk's Echo (MIT, (c) 2026 Alex Sisk).
