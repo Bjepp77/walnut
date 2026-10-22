@@ -92,6 +92,7 @@ def test_done_file_never_reprocessed(tmp_path, monkeypatch):
         seen[v] = (seen[v][0], 0.0)
     watch.scan_once(seen, done)
     assert len(calls) == 1
+    assert not (folder / "a.wav").exists() and (folder / "done" / "a.wav").exists()  # moved, not deleted
     watch.scan_once(seen, done)
     assert len(calls) == 1                # done, not repeated
     assert watch.load_done(tmp_path / "state.json") == done

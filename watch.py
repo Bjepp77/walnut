@@ -7,6 +7,7 @@
 Skips iCloud placeholders (.name.icloud), hidden files, files still growing,
 files iCloud has not downloaded yet (it is asked to fetch them; they are
 retried, not counted as failures), and anything already done (state file keyed by name+size+mtime).
+A transcribed file is moved (never deleted) to done/ beside it.
 A file that fails MAX_ATTEMPTS times is moved (never deleted) to failed/
 beside it, with a NAME.error.txt holding the last error.
 Does NOT file reminders or events: it only runs `audio_digest.py chunk`; the
@@ -112,14 +113,20 @@ def process(p: Path, out_dir: Path | None = None, run=None, handoff: bool = True
     return out
 
 
-def quarantine(p: Path, err: str) -> Path:
-    """Move a failing file to failed/ beside it (never delete) with NAME.error.txt."""
-    dest_dir = p.parent / "failed"
+def move_into(p: Path, sub: str) -> Path:
+    """Move p into sub/ beside it (never delete), keeping any earlier file of the same name."""
+    dest_dir = p.parent / sub
     dest_dir.mkdir(exist_ok=True)
     dest, n = dest_dir / p.name, 1
-    while dest.exists():  # keep an earlier failure of the same name
+    while dest.exists():
         dest, n = dest_dir / f"{p.stem}-{n}{p.suffix}", n + 1
     shutil.move(str(p), str(dest))
+    return dest
+
+
+def quarantine(p: Path, err: str) -> Path:
+    """Move a failing file to failed/ beside it (never delete) with NAME.error.txt."""
+    dest = move_into(p, "failed")
     dest.with_name(dest.name + ".error.txt").write_text(err)
     return dest
 
@@ -145,6 +152,10 @@ def scan_once(seen: dict, done: set[str], fails: dict | None = None, **kw) -> li
             done.add(key)
             save_done(done)
             fails.pop(key, None)
+            try:
+                move_into(p, "done")
+            except OSError as me:  # the transcript exists; a stuck move must not redo it
+                print(f"walnut watch: could not move {p.name} to done/: {me}", file=sys.stderr)
         except Exception as e:  # one bad file must not stop the watcher
             print(f"walnut watch: {p.name}: {e}", file=sys.stderr)
             if key is None:
