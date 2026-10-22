@@ -137,3 +137,26 @@ def test_quarantine_keeps_earlier_failure_of_same_name(tmp_path):
     assert dest.name == "x-1.m4a" and dest.read_text() == "new"
     assert (tmp_path / "failed" / "x.m4a").read_text() == "old"
     assert (tmp_path / "failed" / "x-1.m4a.error.txt").read_text() == "err"
+
+
+def test_dataless_icloud_file_is_fetched_not_failed(tmp_path, monkeypatch):
+    folder = tmp_path / "in"
+    folder.mkdir()
+    src = _wav(folder / "memo.wav", 1)
+    monkeypatch.setattr(watch, "WATCH_DIR", folder)
+    monkeypatch.setattr(watch, "STATE", tmp_path / "state.json")
+    fetched, calls = [], []
+    monkeypatch.setattr(watch, "request_download", fetched.append)
+    monkeypatch.setattr(watch, "process", lambda p, **k: calls.append(p) or p)
+    dataless = {"on": True}
+    monkeypatch.setattr(watch, "is_dataless", lambda p: dataless["on"])
+    seen, done, fails = {}, set(), {}
+    for _ in range(5):
+        watch.scan_once(seen, done, fails)
+    assert fetched == [src] * 5 and calls == [] and fails == {} and src.exists()
+    dataless["on"] = False                # bytes landed
+    watch.scan_once(seen, done, fails)    # first real sighting starts the timer
+    for v in list(seen):
+        seen[v] = (seen[v][0], 0.0)
+    watch.scan_once(seen, done, fails)
+    assert calls == [src]

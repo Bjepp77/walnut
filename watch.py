@@ -5,7 +5,8 @@
   uv run watch.py FILE       # process one file now
 
 Skips iCloud placeholders (.name.icloud), hidden files, files still growing,
-and anything already done (state file keyed by name+size+mtime).
+files iCloud has not downloaded yet (it is asked to fetch them; they are
+retried, not counted as failures), and anything already done (state file keyed by name+size+mtime).
 A file that fails MAX_ATTEMPTS times is moved (never deleted) to failed/
 beside it, with a NAME.error.txt holding the last error.
 Does NOT file reminders or events: it only runs `audio_digest.py chunk`; the
@@ -33,6 +34,7 @@ DIGEST = Path("~/Work/tools/audio_digest.py").expanduser()
 POLL_SECONDS = 15
 STABLE_SECONDS = 20
 MAX_ATTEMPTS = 3
+SF_DATALESS = 0x40000000  # macOS: iCloud listed the file but its bytes are not on disk yet
 
 
 def file_key(p: Path) -> str:
@@ -65,6 +67,18 @@ def candidates(folder: Path | None = None) -> list[Path]:
         if p.is_file() and p.suffix.lower() in file_mode.AUDIO_EXTS:
             out.append(p)
     return out
+
+
+def is_dataless(p: Path) -> bool:
+    return bool(getattr(p.stat(), "st_flags", 0) & SF_DATALESS)
+
+
+def request_download(p: Path) -> None:
+    """Ask iCloud to fetch the file's bytes; reading it before then fails with EDEADLK."""
+    try:
+        subprocess.run(["brctl", "download", str(p)], capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as e:
+        print(f"walnut watch: brctl download {p.name}: {e}", file=sys.stderr)
 
 
 def is_stable(p: Path, seen: dict, now: float, stable: float = STABLE_SECONDS) -> bool:
@@ -119,7 +133,13 @@ def scan_once(seen: dict, done: set[str], fails: dict | None = None, **kw) -> li
         key = None
         try:
             key = file_key(p)
-            if key in done or not is_stable(p, seen, now):
+            if key in done:
+                continue
+            if is_dataless(p):
+                request_download(p)
+                seen.pop(p, None)  # restart the quiet timer once the bytes land
+                continue
+            if not is_stable(p, seen, now):
                 continue
             made.append(process(p, **kw))
             done.add(key)
