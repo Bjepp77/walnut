@@ -1,5 +1,6 @@
 # local data — personal history, recordings, settings live here
-walnut.db
+# walnut.db* covers the live db, its -shm/-wal, and every backup copy
+walnut.db*
 recordings/
 .selftest.wav
 *.log
