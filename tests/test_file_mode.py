@@ -161,3 +161,52 @@ def test_dataless_icloud_file_is_fetched_not_failed(tmp_path, monkeypatch):
         seen[v] = (seen[v][0], 0.0)
     watch.scan_once(seen, done, fails)
     assert calls == [src]
+
+
+# ------------------------------------------------- digest hand-off failures
+
+def _watch_one(tmp_path, monkeypatch, digest_body):
+    """One stable recording in a temp inbox, a fake transcriber, and a fake
+    audio_digest.py whose body is digest_body (None means the script is missing)."""
+    folder, out = tmp_path / "in", tmp_path / "out"
+    folder.mkdir()
+    src = _wav(folder / "memo.wav", 1)
+    digest = tmp_path / "audio_digest.py"
+    if digest_body is not None:
+        digest.write_text(digest_body)
+    monkeypatch.setattr(watch, "WATCH_DIR", folder)
+    monkeypatch.setattr(watch, "OUT_DIR", out)
+    monkeypatch.setattr(watch, "STATE", tmp_path / "state.json")
+    monkeypatch.setattr(watch, "DIGEST", digest)
+    run = lambda audio: [{"start": 0.0, "end": 1.0, "text": "hello"}]
+    seen, done, fails = {}, set(), {}
+    watch.scan_once(seen, done, fails, run=run)       # first sighting
+    for v in list(seen):
+        seen[v] = (seen[v][0], 0.0)                    # pretend it went quiet
+    made = watch.scan_once(seen, done, fails, run=run)
+    return folder, src, made, done, fails
+
+
+@pytest.mark.parametrize("digest_body", [
+    "import sys; sys.stderr.write('boom'); sys.exit(3)\n",   # hand-off fails
+    None,                                                     # script missing
+])
+def test_failed_handoff_leaves_recording_for_retry(tmp_path, monkeypatch, capsys,
+                                                   digest_body):
+    folder, src, made, done, fails = _watch_one(tmp_path, monkeypatch, digest_body)
+    assert made == [] and done == set()                # not marked done
+    assert src.exists() and not (folder / "done").exists()   # left for retry
+    assert list(fails.values()) == [1]                 # counts toward failed/
+    assert watch.load_done(tmp_path / "state.json") == set()
+    err = capsys.readouterr().err
+    assert "memo.wav" in err and "digest hand-off failed" in err   # reason logged
+    if digest_body:
+        assert "exit 3: boom" in err
+    else:
+        assert "not found" in err
+
+
+def test_successful_handoff_marks_done_and_moves(tmp_path, monkeypatch):
+    folder, src, made, done, fails = _watch_one(tmp_path, monkeypatch, "print('{}')\n")
+    assert len(made) == 1 and len(done) == 1 and fails == {}
+    assert not src.exists() and (folder / "done" / "memo.wav").exists()

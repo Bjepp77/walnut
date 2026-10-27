@@ -104,13 +104,23 @@ def process(p: Path, out_dir: Path | None = None, run=None, handoff: bool = True
     tmp = out.with_suffix(".md.part")
     tmp.write_text(body)
     os.replace(tmp, out)  # never expose a half-written transcript
-    if handoff and DIGEST.exists():
-        r = subprocess.run(["python3", str(DIGEST), "chunk", str(out)],
-                           capture_output=True, text=True)
-        print(r.stdout)
-        if r.returncode:
-            print(r.stderr, file=sys.stderr)
+    if handoff:
+        hand_off(out)
     return out
+
+
+def hand_off(out: Path) -> None:
+    """Run `audio_digest.py chunk` on the transcript. Raise if it is missing or
+    fails, so the caller leaves the recording in place to retry."""
+    if not DIGEST.exists():
+        raise RuntimeError(f"digest hand-off failed for {out.name}: {DIGEST} not found")
+    r = subprocess.run(["python3", str(DIGEST), "chunk", str(out)],
+                       capture_output=True, text=True)
+    print(r.stdout)
+    if r.returncode:
+        tail = (r.stderr.strip().splitlines() or [""])[-1][:200]
+        raise RuntimeError(f"digest hand-off failed for {out.name}: "
+                           f"exit {r.returncode}" + (f": {tail}" if tail else ""))
 
 
 def move_into(p: Path, sub: str) -> Path:
