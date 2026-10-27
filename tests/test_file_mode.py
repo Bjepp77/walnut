@@ -220,3 +220,34 @@ def test_handoff_logs_name_and_status_not_the_transcript(tmp_path, monkeypatch, 
     logged = capsys.readouterr()
     assert "PRIVATE-TRANSCRIPT-TEXT" not in logged.out + logged.err
     assert f"{made[0].name}: handed off to audio-digest" in logged.out
+
+
+# ------------------------------------------------- unique transcript names
+
+def _say(word):
+    return lambda audio: [{"start": 0.0, "end": 1.0, "text": word}]
+
+
+def test_same_name_same_minute_recordings_keep_both_transcripts(tmp_path):
+    out, t = tmp_path / "out", 1_790_000_000      # both inside one minute
+    a_src = _wav(tmp_path / "call.wav", 1)
+    os.utime(a_src, (t, t))
+    a = watch.process(a_src, out_dir=out, run=_say("FIRST"), handoff=False)
+    b_src = _wav(tmp_path / "call.flac", 1)       # same stem, other extension
+    os.utime(b_src, (t + 10, t + 10))
+    b = watch.process(b_src, out_dir=out, run=_say("SECOND"), handoff=False)
+    later = tmp_path / "later"
+    later.mkdir()
+    c_src = _wav(later / "call.wav", 2)           # same name again, after a move to done/
+    os.utime(c_src, (t + 20, t + 20))
+    c = watch.process(c_src, out_dir=out, run=_say("THIRD"), handoff=False)
+    assert len({a, b, c}) == 3 and len(list(out.iterdir())) == 3
+    assert "FIRST" in a.read_text() and "SECOND" in b.read_text() and "THIRD" in c.read_text()
+    assert a.name.startswith(time.strftime("%Y-%m-%d_%H%M", time.localtime(t)) + "_call_")
+
+
+def test_retry_of_same_recording_reuses_its_transcript_name(tmp_path):
+    src = _wav(tmp_path / "memo.wav", 1)
+    first = watch.process(src, out_dir=tmp_path / "out", run=_say("x"), handoff=False)
+    again = watch.process(src, out_dir=tmp_path / "out", run=_say("x"), handoff=False)
+    assert first == again and len(list((tmp_path / "out").iterdir())) == 1

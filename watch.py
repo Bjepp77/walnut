@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 import shutil
@@ -93,10 +94,19 @@ def is_stable(p: Path, seen: dict, now: float, stable: float = STABLE_SECONDS) -
     return now - prev[1] >= stable
 
 
+def transcript_name(p: Path, mtime: dt.datetime) -> str:
+    """Minute + slug alone let two recordings of the same name in the same minute
+    share a path, and the second overwrote the first transcript. A short hash of
+    the file key (name, size, mtime) keeps them apart; a retry of the same file
+    gets the same name, so it replaces its own transcript and no other."""
+    tag = hashlib.sha1(file_key(p).encode()).hexdigest()[:8]
+    return f"{mtime:%Y-%m-%d_%H%M}_{file_mode.slugify(p.stem)}_{tag}.md"
+
+
 def process(p: Path, out_dir: Path | None = None, run=None, handoff: bool = True) -> Path:
     out_dir = out_dir or OUT_DIR
     mtime = dt.datetime.fromtimestamp(p.stat().st_mtime)
-    out = out_dir / f"{mtime:%Y-%m-%d_%H%M}_{file_mode.slugify(p.stem)}.md"
+    out = out_dir / transcript_name(p, mtime)
     out_dir.mkdir(parents=True, exist_ok=True)
     segs = file_mode.transcribe_chunks(file_mode.iter_audio_chunks(p), run=run)
     lines = file_mode.segments_to_lines(segs)
