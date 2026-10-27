@@ -116,11 +116,13 @@ def hand_off(out: Path) -> None:
         raise RuntimeError(f"digest hand-off failed for {out.name}: {DIGEST} not found")
     r = subprocess.run(["python3", str(DIGEST), "chunk", str(out)],
                        capture_output=True, text=True)
-    print(r.stdout)
+    # stdout is the whole transcript as JSON; launchd sends ours to
+    # ~/Library/Logs/walnut-watch.log, so log the file name and status only
     if r.returncode:
         tail = (r.stderr.strip().splitlines() or [""])[-1][:200]
         raise RuntimeError(f"digest hand-off failed for {out.name}: "
                            f"exit {r.returncode}" + (f": {tail}" if tail else ""))
+    print(f"walnut watch: {out.name}: handed off to audio-digest")
 
 
 def move_into(p: Path, sub: str) -> Path:

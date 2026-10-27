@@ -210,3 +210,13 @@ def test_successful_handoff_marks_done_and_moves(tmp_path, monkeypatch):
     folder, src, made, done, fails = _watch_one(tmp_path, monkeypatch, "print('{}')\n")
     assert len(made) == 1 and len(done) == 1 and fails == {}
     assert not src.exists() and (folder / "done" / "memo.wav").exists()
+
+
+def test_handoff_logs_name_and_status_not_the_transcript(tmp_path, monkeypatch, capsys):
+    """audio_digest.py chunk prints the full transcript; that must not reach the log."""
+    body = "print('{\"chunks\": [\"PRIVATE-TRANSCRIPT-TEXT\"]}')\n"
+    folder, src, made, done, fails = _watch_one(tmp_path, monkeypatch, body)
+    assert len(made) == 1
+    logged = capsys.readouterr()
+    assert "PRIVATE-TRANSCRIPT-TEXT" not in logged.out + logged.err
+    assert f"{made[0].name}: handed off to audio-digest" in logged.out
