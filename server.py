@@ -33,8 +33,18 @@ def _guard_host():
     if host not in _ALLOWED_HOSTS:
         return jsonify({"error": "forbidden host"}), 403
     origin = request.headers.get("Origin")
-    if origin and not origin.startswith(("http://127.0.0.1", "http://localhost")):
+    if origin and origin not in _allowed_origins(request.environ.get("SERVER_PORT", "")):
         return jsonify({"error": "forbidden origin"}), 403
+
+
+def _allowed_origins(port: str) -> set[str]:
+    """The dashboard's own origins, exact: scheme, loopback host and the port
+    this server listens on. A prefix test let http://localhost.evil.example in."""
+    hosts = ("127.0.0.1", "localhost", "[::1]")
+    allowed = {f"http://{h}:{port}" for h in hosts}
+    if port == "80":  # browsers omit the default port from Origin
+        allowed |= {f"http://{h}" for h in hosts}
+    return allowed
 
 
 @app.errorhandler(ValueError)

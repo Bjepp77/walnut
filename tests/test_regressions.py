@@ -281,6 +281,31 @@ def test_non_loopback_host_is_refused(client):
     assert client.post("/api/speech/stop").status_code == 200
 
 
+@pytest.mark.parametrize("origin", [
+    "http://localhost.evil.example",      # passed the old prefix check
+    "http://127.0.0.1.evil.example",      # passed the old prefix check
+    "http://localhost:9999",              # another local server, wrong port
+    "https://localhost",                  # wrong scheme
+    "null",
+])
+def test_lookalike_origin_is_refused(client, db, origin):
+    """Origin must match scheme, host and port exactly, not by prefix."""
+    before = db.get("snippets_enabled")
+    r = client.post("/api/snippets/toggle", headers={"Origin": origin})
+    assert r.status_code == 403
+    assert db.get("snippets_enabled") == before          # nothing written
+
+
+def test_dashboard_own_origin_is_allowed(client):
+    # the test client serves on localhost:80, so that is the server's own origin
+    for origin in ("http://localhost", "http://127.0.0.1", "http://[::1]"):
+        assert client.post("/api/speech/stop",
+                           headers={"Origin": origin}).status_code == 200
+    import server
+    assert "http://127.0.0.1:8765" in server._allowed_origins("8765")
+    assert "http://127.0.0.1:8766" not in server._allowed_origins("8765")
+
+
 def test_system_endpoint_reports_hardware(client):
     d = client.get("/api/system").get_json()
     assert d["backend"] in ("mlx", "faster-whisper")
