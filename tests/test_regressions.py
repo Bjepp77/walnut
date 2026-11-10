@@ -629,3 +629,27 @@ def test_concurrent_speak_leaves_one_cuttable_say(db, monkeypatch):
     assert len(procs) == 6
     c.stop_all()
     assert all(p.dead for p in procs), "a say process was orphaned"
+
+
+# ------------------------------------------------------------ console url (m4)
+
+@pytest.mark.parametrize("url", [
+    "http://127.0.0.1:4173", "http://localhost:4173/", "http://[::1]:4173",
+    "http://127.5.5.5", "https://console.example.com", "https://10.0.0.5:8443"])
+def test_console_url_allowed(db, url):
+    assert db.validate_setting("console_url", url) == url
+
+
+@pytest.mark.parametrize("url", [
+    "http://example.com", "http://192.168.1.20:4173", "http://10.0.0.5",
+    "http://localhost.evil.com", "http://127.0.0.1.evil.com", "http://",
+    "ftp://localhost"])
+def test_console_url_refused(db, url):
+    with pytest.raises(ValueError):
+        db.validate_setting("console_url", url)
+
+
+def test_console_url_refusal_is_a_400_with_a_clear_message(client):
+    r = client.put("/api/settings", json={"console_url": "http://example.com"})
+    assert r.status_code == 400
+    assert "https" in r.get_json()["error"]

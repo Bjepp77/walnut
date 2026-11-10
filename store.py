@@ -1,10 +1,12 @@
 """SQLite storage for Walnut: settings, dictionary, snippets, history, stats."""
 
 import contextlib
+import ipaddress
 import re
 import sqlite3
 import time
 import tomllib
+import urllib.parse
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -171,7 +173,28 @@ def _url(v: str) -> str:
     v = v.strip()
     if not v.startswith(("http://", "https://")):
         raise ValueError(f"not an http(s) URL: {v!r}")
+    # Spoken commands are POSTed here. Plain http to another machine would send
+    # them unencrypted, so only https (anywhere) or http to this Mac is allowed.
+    try:
+        host = urllib.parse.urlsplit(v).hostname
+    except ValueError:
+        raise ValueError(f"not a valid URL: {v!r}")
+    if not host:
+        raise ValueError(f"URL has no host: {v!r}")
+    if v.startswith("http://") and not _is_loopback(host):
+        raise ValueError(
+            "plain http is only allowed to this Mac (localhost or 127.0.0.1); "
+            "use an https:// address for another machine")
     return v
+
+
+def _is_loopback(host: str) -> bool:
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def _voice(v: str) -> str:
