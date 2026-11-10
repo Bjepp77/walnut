@@ -18,6 +18,9 @@ PORT=8765
 
 bold() { printf "\033[1m%s\033[0m\n" "$1"; }
 die()  { printf "\033[31merror:\033[0m %s\n" "$1" >&2; exit 1; }
+warn() { printf "\033[33mwarning:\033[0m %s\n" "$1" >&2; }
+# Escape a value for use inside an XML <string> (paths may hold & < >).
+xml_escape() { printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
 
 WANT_APP=0
 WANT_LOGIN=0
@@ -182,7 +185,9 @@ fi
 # ---------------------------------------------------------------- deps
 bold "Installing dependencies…"
 cd "$REPO"
-uv sync
+# --locked: install exactly what uv.lock says and stop if it has drifted from
+# pyproject.toml, instead of silently rewriting the lock.
+uv sync --locked
 
 # Apple Silicon gets mlx-whisper (GPU) as well as faster-whisper; Intel Macs
 # get faster-whisper alone. pyproject.toml decides via a platform marker, so
@@ -199,7 +204,10 @@ bold "460 MB on Intel. It happens once, and it is cached for good."
 if uv run walnut.py --test; then
   bold "Self-test passed."
 else
-  die "Self-test failed. Run \`uv run walnut.py --doctor\` and check the output above."
+  # Usually the model download (no network). The app and login item still
+  # install; Walnut retries the download when it starts.
+  warn "Self-test failed (often the speech model download). Installing anyway."
+  warn "Run \`uv run walnut.py --doctor\` and check the output above, then start Walnut with a working connection."
 fi
 
 UV_BIN="$(command -v uv)"
@@ -212,6 +220,8 @@ if [ "$WANT_LOGIN" = 1 ]; then
   bold "Installing login item…"
   retire_legacy
   mkdir -p "$HOME/Library/LaunchAgents"
+  UV_BIN_XML="$(xml_escape "$UV_BIN")"
+  REPO_XML="$(xml_escape "$REPO")"
   # Launch through `uv run` rather than .venv/bin/python: macOS binds
   # Accessibility permission to the launching binary, and uv keeps the
   # environment correct even after a dependency change.
@@ -224,12 +234,12 @@ if [ "$WANT_LOGIN" = 1 ]; then
   <key>Label</key><string>$LABEL</string>
   <key>ProgramArguments</key>
   <array>
-    <string>$UV_BIN</string>
+    <string>$UV_BIN_XML</string>
     <string>run</string>
-    <string>--project</string><string>$REPO</string>
-    <string>$REPO/walnut.py</string>
+    <string>--project</string><string>$REPO_XML</string>
+    <string>$REPO_XML/walnut.py</string>
   </array>
-  <key>WorkingDirectory</key><string>$REPO</string>
+  <key>WorkingDirectory</key><string>$REPO_XML</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>/tmp/walnut.log</string>
