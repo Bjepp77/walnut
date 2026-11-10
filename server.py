@@ -4,6 +4,7 @@ import logging
 import subprocess
 import threading
 from pathlib import Path
+from urllib.parse import urlparse
 
 from flask import Flask, jsonify, request, send_from_directory
 
@@ -27,13 +28,23 @@ HOTKEYS = None
 _ALLOWED_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
 
 
+def _origin_is_loopback(origin: str) -> bool:
+    """Exact scheme + hostname match, any port. A prefix test let
+    http://localhost.evil.com through."""
+    try:
+        u = urlparse(origin)
+        return u.scheme == "http" and u.hostname in _ALLOWED_HOSTS
+    except ValueError:
+        return False
+
+
 @app.before_request
 def _guard_host():
     host = (request.host or "").rsplit(":", 1)[0]
     if host not in _ALLOWED_HOSTS:
         return jsonify({"error": "forbidden host"}), 403
     origin = request.headers.get("Origin")
-    if origin and not origin.startswith(("http://127.0.0.1", "http://localhost")):
+    if origin and not _origin_is_loopback(origin):
         return jsonify({"error": "forbidden origin"}), 403
 
 

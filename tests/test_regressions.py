@@ -438,3 +438,16 @@ def test_a_truly_dead_microphone_fails_cleanly(db, monkeypatch):
     assert c.stream is None and not c.recording()
     assert states[-1] == "idle"
     assert all(s.closed for s in fake.streams), "half-open streams left behind"
+
+
+def test_origin_must_be_exactly_loopback(client):
+    """startswith() let http://localhost.evil.com and http://127.0.0.1.evil.com
+    through. The hostname must match exactly; the port may be anything."""
+    for bad in ("http://localhost.evil.com", "http://127.0.0.1.evil.com",
+                "http://localhost.evil.com:8080", "https://evil.com"):
+        r = client.post("/api/speech/stop", headers={"Origin": bad})
+        assert r.status_code == 403, bad
+    for good in ("http://localhost:5000", "http://127.0.0.1:5000",
+                 "http://[::1]:5000", "http://localhost"):
+        r = client.post("/api/speech/stop", headers={"Origin": good})
+        assert r.status_code == 200, good
