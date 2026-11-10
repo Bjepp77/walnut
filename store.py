@@ -1,10 +1,12 @@
 """SQLite storage for Walnut: settings, dictionary, snippets, history, stats."""
 
 import contextlib
+import ipaddress
 import re
 import sqlite3
 import time
 import tomllib
+import urllib.parse
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -139,7 +141,10 @@ def _seed_from_config() -> None:
 
 def _int_in(lo: int, hi: int):
     def check(v: str) -> str:
-        n = int(float(v))         # accept "210" and "210.0"
+        try:
+            n = int(float(v))     # accept "210" and "210.0"
+        except OverflowError:     # "inf", "1e999"
+            raise ValueError(f"must be between {lo} and {hi}")
         if not lo <= n <= hi:
             raise ValueError(f"must be between {lo} and {hi}")
         return str(n)
@@ -171,7 +176,35 @@ def _url(v: str) -> str:
     v = v.strip()
     if not v.startswith(("http://", "https://")):
         raise ValueError(f"not an http(s) URL: {v!r}")
+    # Spoken commands are POSTed here. Plain http to another machine would send
+    # them unencrypted, so only https (anywhere) or http to this Mac is allowed.
+    try:
+        host = urllib.parse.urlsplit(v).hostname
+    except ValueError:
+        raise ValueError(f"not a valid URL: {v!r}")
+    if not host:
+        raise ValueError(f"URL has no host: {v!r}")
+    if v.startswith("http://") and not _is_loopback(host):
+        raise ValueError(
+            "plain http is only allowed to this Mac (localhost or 127.0.0.1); "
+            "use an https:// address for another machine")
     return v
+
+
+def _is_loopback(host: str) -> bool:
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _stt_model(v: str) -> str:
+    v = v.strip()
+    if v and not stt_backend.is_known(v):     # blank = let Walnut choose
+        raise ValueError(f"unknown speech model {v!r}")
+    return stt_backend.canonical(v)
 
 
 def _voice(v: str) -> str:
@@ -185,7 +218,7 @@ VALIDATORS = {
     "typing_wpm": _int_in(5, 300),
     "recordings_keep": _int_in(0, 500),
     "port": _int_in(1024, 65535),
-    "stt_model": lambda v: stt_backend.canonical(v),
+    "stt_model": _stt_model,
     "stt_backend": _one_of("auto", stt_backend.MLX, stt_backend.FASTER),
     "stt_language": _language,
     "snippets_enabled": _one_of("0", "1"),
@@ -337,9 +370,18 @@ def history_get(hid: int) -> dict | None:
     return dict(row) if row else None
 
 
+def _inside_recordings(path) -> bool:
+    """True only for a path that really lives under the recordings folder."""
+    try:
+        return Path(path).resolve().is_relative_to(RECORDINGS.resolve())
+    except (OSError, ValueError):
+        return False
+
+
 def history_delete(hid: int) -> None:
     entry = history_get(hid)
-    if entry and entry.get("audio_path"):
+    # A row is data, not a licence to delete: only unlink our own recordings.
+    if entry and entry.get("audio_path") and _inside_recordings(entry["audio_path"]):
         Path(entry["audio_path"]).unlink(missing_ok=True)
     with _conn() as c:
         c.execute("DELETE FROM history WHERE id=?", (hid,))
@@ -401,7 +443,9 @@ def prune_recordings(keep: int | None = None, now: float | None = None) -> int:
         return removed
 
     known = protected | {Path(p).resolve() for p in superseded}
-    for f in RECORDINGS.glob("*.wav"):
+    # Only files named the way _save_audio() names them: anything else in this
+    # folder was put there by the user and is not ours to sweep.
+    for f in RECORDINGS.glob("dictation-*.wav"):
         if f.resolve() in known:
             continue
         try:

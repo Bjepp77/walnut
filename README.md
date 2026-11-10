@@ -190,6 +190,9 @@ Everything is local. There is no server, no telemetry, and no account.
   default, configurable, `0` to keep none.
 - The dashboard binds `127.0.0.1` only, and refuses any request whose `Host`
   isn't loopback, so a web page you visit can't reach it.
+- The dashboard has no login. Any program running on this Mac can read your
+  dictation history through it, delete it, or change settings. That is fine
+  for a Mac only you use; do not run Walnut on a shared machine.
 - The single network call Walnut ever makes is downloading the Whisper model
   from Hugging Face, once.
 

@@ -40,6 +40,51 @@ def set_clipboard(text: str) -> None:
     subprocess.run(["pbcopy"], input=text, text=True)
 
 
+def save_clipboard():
+    """Snapshot the whole clipboard so it can be put back untouched.
+
+    Through AppKit (PyObjC ships with rumps/pynput on macOS) every item and
+    every type is kept, so a copied image, file or rich text survives. Without
+    AppKit only plain text can be kept (pbpaste), which is the old behaviour.
+    """
+    try:
+        from AppKit import NSPasteboard
+    except ImportError:
+        return ("text", get_clipboard())
+    try:
+        items = []
+        for item in NSPasteboard.generalPasteboard().pasteboardItems() or []:
+            kept = {}
+            for t in item.types():
+                data = item.dataForType_(t)
+                if data is not None:
+                    kept[str(t)] = data
+            if kept:
+                items.append(kept)
+        return ("items", items)
+    except Exception as e:           # never let a clipboard quirk kill a paste
+        log(f"Could not snapshot the clipboard ({e}); keeping text only.")
+        return ("text", get_clipboard())
+
+
+def restore_clipboard(snap) -> None:
+    kind, payload = snap
+    if kind == "text":
+        set_clipboard(payload)
+        return
+    from AppKit import NSPasteboard, NSPasteboardItem
+    pb = NSPasteboard.generalPasteboard()
+    pb.clearContents()
+    new = []
+    for kept in payload:
+        item = NSPasteboardItem.alloc().init()
+        for t, data in kept.items():
+            item.setData_forType_(data, t)
+        new.append(item)
+    if new:
+        pb.writeObjects_(new)
+
+
 def _normalize(text: str) -> str:
     return re.sub(r"[^\w\s]", "", text).strip().lower()
 
@@ -93,6 +138,15 @@ class Core:
         self.stream = None
         self.frames: list[np.ndarray] = []
         self.lock = threading.Lock()
+        # Lock order (never the reverse, never both of the last two at once):
+        #   self.lock  ->  clip_lock
+        #   self.lock  ->  audio_lock
+        # clip_lock guards save / copy / paste / restore of the clipboard.
+        # audio_lock guards say_proc and play_proc (speak, stop, replay).
+        # self.lock is only ever taken with blocking=False by the hotkeys, and
+        # nothing holding clip_lock or audio_lock ever asks for self.lock.
+        self.clip_lock = threading.Lock()
+        self.audio_lock = threading.RLock()   # stop_all() nests stop_speech()
         self.on_state = lambda state: None  # 'idle' | 'recording' | 'busy'
         self.on_level = lambda rms: None    # mic level while recording
         # 'loading' until warm_up finishes. On a fresh machine that means a
@@ -116,56 +170,69 @@ class Core:
         return self.speaking() or self.playing()
 
     def stop_speech(self) -> None:
-        if self.speaking():
-            self.say_proc.terminate()
-        self.say_proc = None
+        with self.audio_lock:
+            if self.speaking():
+                self.say_proc.terminate()
+            self.say_proc = None
 
     def stop_playback(self) -> None:
-        if self.playing():
-            self.play_proc.terminate()
-        self.play_proc = None
+        with self.audio_lock:
+            if self.playing():
+                self.play_proc.terminate()
+            self.play_proc = None
 
     def stop_all(self) -> None:
-        self.stop_speech()
-        self.stop_playback()
+        with self.audio_lock:
+            self.stop_speech()
+            self.stop_playback()
 
     def play_file(self, path: str) -> None:
         """Replay a recorded dictation, keeping the handle so it can be cut."""
-        self.stop_all()
-        self.play_proc = subprocess.Popen(
-            ["afplay", path], stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL)
+        with self.audio_lock:
+            self.stop_all()
+            self.play_proc = subprocess.Popen(
+                ["afplay", path], stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL)
 
     def _copy_selection(self) -> str:
         from pynput.keyboard import Key
 
-        saved = get_clipboard()
-        try:
-            set_clipboard("")
-            time.sleep(0.30)  # let hotkey modifiers be released
-            with self.kb.pressed(Key.cmd):
-                self.kb.press("c")
-                self.kb.release("c")
-            time.sleep(0.30)
-            return get_clipboard()
-        finally:
-            set_clipboard(saved)   # restore even if the copy raises
+        with self.clip_lock:   # one clipboard user at a time (see Core.__init__)
+            saved = save_clipboard()
+            try:
+                set_clipboard("")
+                time.sleep(0.30)  # let hotkey modifiers be released
+                with self.kb.pressed(Key.cmd):
+                    self.kb.press("c")
+                    self.kb.release("c")
+                time.sleep(0.30)
+                return get_clipboard()
+            finally:
+                restore_clipboard(saved)   # restore even if the copy raises
 
     def speak(self, text: str, record_history: bool = True) -> None:
-        self.stop_all()
         rate = int(store.get_valid("tts_rate"))
         voice = store.get_valid("tts_voice")
         cmd = ["say", "-r", str(rate)] + (["-v", voice] if voice else [])
+        # Stop-then-start is one step under audio_lock. Unlocked, two callers
+        # could both stop, both start, and the second handle overwrote the
+        # first: a `say` nobody could cut. The text is written after the lock
+        # is released so a slow reader cannot block Stop.
+        proc = None
         try:
-            self.say_proc = subprocess.Popen(cmd + ["-f", "-"],
-                                             stdin=subprocess.PIPE)
-            self.say_proc.stdin.write(text.encode())
-            self.say_proc.stdin.close()
+            with self.audio_lock:
+                self.stop_all()
+                proc = self.say_proc = subprocess.Popen(
+                    cmd + ["-f", "-"], stdin=subprocess.PIPE)
+            proc.stdin.write(text.encode())
+            proc.stdin.close()
         except (OSError, ValueError) as e:
             # a deleted voice, or `say` refusing the text
             log(f"Narration failed: {e}")
             play_sound(SOUND_ERROR)
-            self.say_proc = None
+            with self.audio_lock:
+                if proc is None or self.say_proc is proc:
+                    self.say_proc = None
             return
         if record_history:
             est = len(text.split()) / max(rate, 1) * 60
@@ -365,16 +432,17 @@ class Core:
     def _type(self, text: str) -> None:
         from pynput.keyboard import Key
 
-        saved = get_clipboard()
-        try:
-            set_clipboard(text)
-            time.sleep(0.25)   # slower apps read the clipboard late; 0.15 dropped pastes
-            with self.kb.pressed(Key.cmd):
-                self.kb.press("v")
-                self.kb.release("v")
-            time.sleep(0.75)   # let the paste land before the clipboard is restored
-        finally:
-            set_clipboard(saved)   # never strand the transcript in the clipboard
+        with self.clip_lock:   # one clipboard user at a time (see Core.__init__)
+            saved = save_clipboard()
+            try:
+                set_clipboard(text)
+                time.sleep(0.25)   # slower apps read the clipboard late; 0.15 dropped pastes
+                with self.kb.pressed(Key.cmd):
+                    self.kb.press("v")
+                    self.kb.release("v")
+                time.sleep(0.75)   # let the paste land before the clipboard is restored
+            finally:
+                restore_clipboard(saved)   # never strand the transcript in the clipboard
 
 
 class HotkeyManager:

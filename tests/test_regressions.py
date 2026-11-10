@@ -4,6 +4,7 @@ Run with:  uv run --group dev pytest -q
 """
 
 import os
+import time
 import sqlite3
 import subprocess
 from pathlib import Path
@@ -184,11 +185,36 @@ def test_prune_sweeps_old_orphan_files(db):
     nothing points at. Once it's older than the grace window, it goes."""
     import time
 
-    _wav(db, "orphan.wav")
-    db.history_add("dictation", "kept", 1.0, audio_path=_wav(db, "kept.wav"))
+    _wav(db, "dictation-20200101-000000.wav")
+    db.history_add("dictation", "kept", 1.0, audio_path=_wav(db, "dictation-kept.wav"))
     later = time.time() + db.ORPHAN_GRACE_SECS + 1
     assert db.prune_recordings(keep=3, now=later) == 1
-    assert [p.name for p in db.RECORDINGS.glob("*.wav")] == ["kept.wav"]
+    assert [p.name for p in db.RECORDINGS.glob("*.wav")] == ["dictation-kept.wav"]
+
+
+def test_sweep_leaves_files_that_are_not_ours(db):
+    import time
+
+    mine = _wav(db, "dictation-20200101-000000.wav")
+    theirs = _wav(db, "my-voice-memo.wav")
+    later = time.time() + db.ORPHAN_GRACE_SECS + 1
+    assert db.prune_recordings(keep=3, now=later) == 1
+    assert not Path(mine).exists() and Path(theirs).exists()
+
+
+def test_history_delete_only_unlinks_inside_recordings(db, tmp_path):
+    outside = tmp_path / "precious.wav"
+    outside.write_bytes(b"RIFF")
+    sneaky = str(db.RECORDINGS / ".." / "precious.wav")   # resolves outside
+    inside = _wav(db, "dictation-x.wav")
+    a = db.history_add("dictation", "a", 1.0, audio_path=str(outside))
+    b = db.history_add("dictation", "b", 1.0, audio_path=sneaky)
+    c = db.history_add("dictation", "c", 1.0, audio_path=inside)
+    for hid in (a, b, c):
+        db.history_delete(hid)
+    assert outside.exists()
+    assert not Path(inside).exists()
+    assert db.history_get(a) is None and db.history_get(c) is None
 
 
 def test_prune_does_not_delete_a_dictation_still_being_saved(db):
@@ -478,3 +504,219 @@ def test_failed_command_start_does_not_hijack_next_dictation(db, monkeypatch):
         pass
     assert c.command_next is False
     assert not c.lock.locked()
+
+
+# ------------------------------------------------------------ clipboard (m1)
+
+class _FakeData:  # stands in for NSData
+    def __init__(self, b): self.b = b
+
+
+class _FakeItem:
+    def __init__(self, d=None): self.d = dict(d or {})
+    @classmethod
+    def alloc(cls): return cls()
+    def init(self): return self
+    def types(self): return list(self.d)
+    def dataForType_(self, t): return self.d.get(t)
+    def setData_forType_(self, data, t): self.d[t] = data; return True
+
+
+class _FakePasteboard:
+    def __init__(self, items): self.items = items
+    def pasteboardItems(self): return self.items
+    def clearContents(self): self.items = []
+    def writeObjects_(self, objs): self.items = list(objs)
+
+
+def _fake_appkit(monkeypatch, pb):
+    import sys
+    import types
+    mod = types.ModuleType("AppKit")
+    mod.NSPasteboard = types.SimpleNamespace(generalPasteboard=lambda: pb)
+    mod.NSPasteboardItem = _FakeItem
+    monkeypatch.setitem(sys.modules, "AppKit", mod)
+
+
+def test_clipboard_image_survives_dictation_paste(db, monkeypatch):
+    import core
+    png = _FakeData(b"\x89PNG")
+    pb = _FakePasteboard([_FakeItem({"public.png": png, "public.tiff": _FakeData(b"t")})])
+    _fake_appkit(monkeypatch, pb)
+    monkeypatch.setattr(core.time, "sleep", lambda s: None)
+    # pbcopy stand-in: replaces the clipboard with plain text
+    monkeypatch.setattr(core, "set_clipboard", lambda t: setattr(
+        pb, "items", [_FakeItem({"public.utf8-plain-text": _FakeData(t.encode())})]))
+    c = core.Core()
+    c._type("hello")
+    assert len(pb.items) == 1
+    assert pb.items[0].d["public.png"] is png
+    assert set(pb.items[0].d) == {"public.png", "public.tiff"}
+
+
+def test_empty_clipboard_restores_to_empty(db, monkeypatch):
+    import core
+    pb = _FakePasteboard([])
+    _fake_appkit(monkeypatch, pb)
+    snap = core.save_clipboard()
+    pb.items = [_FakeItem({"public.utf8-plain-text": _FakeData(b"x")})]
+    core.restore_clipboard(snap)
+    assert pb.items == []
+
+
+def test_clipboard_without_appkit_falls_back_to_text(monkeypatch):
+    import sys
+    import core
+    monkeypatch.setitem(sys.modules, "AppKit", None)   # import raises
+    sent = []
+    monkeypatch.setattr(core, "get_clipboard", lambda: "old")
+    monkeypatch.setattr(core, "set_clipboard", sent.append)
+    core.restore_clipboard(core.save_clipboard())
+    assert sent == ["old"]
+
+
+# ------------------------------------------------------------ races (m2)
+
+def test_clipboard_users_do_not_interleave(db, monkeypatch):
+    """A paste and a selection copy running together must take turns."""
+    import threading
+    import core
+    events = []
+    real_sleep = time.sleep
+    monkeypatch.setattr(core.time, "sleep", lambda s: real_sleep(0.01))
+    monkeypatch.setattr(core, "save_clipboard", lambda: events.append("save") or "snap")
+    monkeypatch.setattr(core, "restore_clipboard", lambda s: events.append("restore"))
+    monkeypatch.setattr(core, "set_clipboard", lambda t: events.append("set"))
+    monkeypatch.setattr(core, "get_clipboard", lambda: events.append("get") or "x")
+    c = core.Core()
+    import contextlib
+    c.kb = type("KB", (), {"pressed": lambda s, k: contextlib.nullcontext(),
+                           "press": lambda s, k: None,
+                           "release": lambda s, k: None})()
+    ts = [threading.Thread(target=c._type, args=("t",)),
+          threading.Thread(target=c._copy_selection),
+          threading.Thread(target=c._type, args=("u",))]
+    for t in ts: t.start()
+    for t in ts: t.join(10)
+    # each user's save ... restore is a contiguous block
+    flat = " ".join(events).replace("save", "|save").split("|")[1:]
+    assert len(flat) == 3
+    assert all(b.strip().startswith("save") and b.strip().endswith("restore") and
+               b.count("save") == 1 for b in flat), events
+
+
+def test_concurrent_speak_leaves_one_cuttable_say(db, monkeypatch):
+    import threading
+    import core
+
+    procs = []
+
+    class FakeProc:
+        def __init__(self, *a, **k):
+            time.sleep(0.02)          # widen the race window
+            self.dead = False
+            self.stdin = type("S", (), {"write": lambda s, b: None,
+                                        "close": lambda s: None})()
+            procs.append(self)
+        def poll(self): return 1 if self.dead else None
+        def terminate(self): self.dead = True
+
+    monkeypatch.setattr(core.subprocess, "Popen", FakeProc)
+    c = core.Core()
+    ts = [threading.Thread(target=c.speak, args=("hi", False)) for _ in range(6)]
+    for t in ts: t.start()
+    for t in ts: t.join(10)
+    assert len(procs) == 6
+    c.stop_all()
+    assert all(p.dead for p in procs), "a say process was orphaned"
+
+
+# ------------------------------------------------------------ console url (m4)
+
+@pytest.mark.parametrize("url", [
+    "http://127.0.0.1:4173", "http://localhost:4173/", "http://[::1]:4173",
+    "http://127.5.5.5", "https://console.example.com", "https://10.0.0.5:8443"])
+def test_console_url_allowed(db, url):
+    assert db.validate_setting("console_url", url) == url
+
+
+@pytest.mark.parametrize("url", [
+    "http://example.com", "http://192.168.1.20:4173", "http://10.0.0.5",
+    "http://localhost.evil.com", "http://127.0.0.1.evil.com", "http://",
+    "ftp://localhost"])
+def test_console_url_refused(db, url):
+    with pytest.raises(ValueError):
+        db.validate_setting("console_url", url)
+
+
+def test_console_url_refusal_is_a_400_with_a_clear_message(client):
+    r = client.put("/api/settings", json={"console_url": "http://example.com"})
+    assert r.status_code == 400
+    assert "https" in r.get_json()["error"]
+
+
+# ------------------------------------------------------------ bad bodies (m6)
+
+@pytest.mark.parametrize("method,url,body", [
+    ("post", "/api/words", {"word": 5}),
+    ("post", "/api/words", [1, 2]),
+    ("post", "/api/replacements", {"wrong": 1, "right": "x"}),
+    ("post", "/api/replacements", ["a"]),
+    ("post", "/api/snippets", {"trigger": ["a"], "expansion": "x"}),
+    ("post", "/api/snippets", ["a"]),
+    ("put", "/api/snippets/1", ["a"]),
+    ("put", "/api/settings", ["a"]),
+    ("put", "/api/settings", {"tts_rate": "inf"}),
+    ("put", "/api/settings", {"tts_rate": 1e999}),
+    ("post", "/api/test-voice", {"text": 5}),
+])
+def test_bad_bodies_are_400_not_500(client, method, url, body):
+    assert getattr(client, method)(url, json=body).status_code == 400
+
+
+def test_good_bodies_still_work(client, db):
+    assert client.post("/api/words", json={"word": "Walnut"}).status_code == 200
+    assert client.post("/api/words").status_code in (200, 415)   # unchanged: no body
+    assert [w["word"] for w in db.words_list()] == ["Walnut"]
+
+
+# ------------------------------------------------------------ stt_model (m7)
+
+def test_unknown_stt_model_is_rejected(client, db):
+    before = db.get("stt_model")
+    r = client.put("/api/settings", json={"stt_model": "large-v3-trubo"})
+    assert r.status_code == 400
+    assert "unknown speech model" in r.get_json()["error"]
+    assert db.get("stt_model") == before
+
+
+def test_known_and_legacy_stt_model_names_still_work(db):
+    import stt
+    for m in stt._BY_ID:
+        assert db.validate_setting("stt_model", m) == m
+    for old, new in stt._LEGACY.items():
+        assert db.validate_setting("stt_model", old) == stt.canonical(old)
+    assert db.validate_setting("stt_model", "") == stt.default_model()
+
+
+# ------------------------------------------------------------ console bridge (m11)
+
+def test_console_bridge_posts_to_the_configured_url(db, monkeypatch):
+    import io
+    import json
+    import console_bridge
+
+    db.set_setting("console_url", "https://console.example.com/")
+    seen = []
+
+    def fake_urlopen(req, timeout=None):
+        seen.append(req)
+        return io.BytesIO(json.dumps({"id": None, "target": "vet-skill"}).encode())
+
+    monkeypatch.setattr(console_bridge.urllib.request, "urlopen", fake_urlopen)
+    spoken = []
+    console_bridge.handle("  run the vet skill. ", spoken.append)
+    assert seen[0].full_url == "https://console.example.com/api/run"
+    assert seen[0].get_method() == "POST"
+    assert json.loads(seen[0].data) == {"input": "run the vet skill"}
+    assert spoken == ["Running vet skill."]
