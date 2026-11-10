@@ -4,6 +4,7 @@ Run with:  uv run --group dev pytest -q
 """
 
 import os
+import time
 import sqlite3
 import subprocess
 from pathlib import Path
@@ -547,3 +548,59 @@ def test_clipboard_without_appkit_falls_back_to_text(monkeypatch):
     monkeypatch.setattr(core, "set_clipboard", sent.append)
     core.restore_clipboard(core.save_clipboard())
     assert sent == ["old"]
+
+
+# ------------------------------------------------------------ races (m2)
+
+def test_clipboard_users_do_not_interleave(db, monkeypatch):
+    """A paste and a selection copy running together must take turns."""
+    import threading
+    import core
+    events = []
+    real_sleep = time.sleep
+    monkeypatch.setattr(core.time, "sleep", lambda s: real_sleep(0.01))
+    monkeypatch.setattr(core, "save_clipboard", lambda: events.append("save") or "snap")
+    monkeypatch.setattr(core, "restore_clipboard", lambda s: events.append("restore"))
+    monkeypatch.setattr(core, "set_clipboard", lambda t: events.append("set"))
+    monkeypatch.setattr(core, "get_clipboard", lambda: events.append("get") or "x")
+    c = core.Core()
+    import contextlib
+    c.kb = type("KB", (), {"pressed": lambda s, k: contextlib.nullcontext(),
+                           "press": lambda s, k: None,
+                           "release": lambda s, k: None})()
+    ts = [threading.Thread(target=c._type, args=("t",)),
+          threading.Thread(target=c._copy_selection),
+          threading.Thread(target=c._type, args=("u",))]
+    for t in ts: t.start()
+    for t in ts: t.join(10)
+    # each user's save ... restore is a contiguous block
+    flat = " ".join(events).replace("save", "|save").split("|")[1:]
+    assert len(flat) == 3
+    assert all(b.strip().startswith("save") and b.strip().endswith("restore") and
+               b.count("save") == 1 for b in flat), events
+
+
+def test_concurrent_speak_leaves_one_cuttable_say(db, monkeypatch):
+    import threading
+    import core
+
+    procs = []
+
+    class FakeProc:
+        def __init__(self, *a, **k):
+            time.sleep(0.02)          # widen the race window
+            self.dead = False
+            self.stdin = type("S", (), {"write": lambda s, b: None,
+                                        "close": lambda s: None})()
+            procs.append(self)
+        def poll(self): return 1 if self.dead else None
+        def terminate(self): self.dead = True
+
+    monkeypatch.setattr(core.subprocess, "Popen", FakeProc)
+    c = core.Core()
+    ts = [threading.Thread(target=c.speak, args=("hi", False)) for _ in range(6)]
+    for t in ts: t.start()
+    for t in ts: t.join(10)
+    assert len(procs) == 6
+    c.stop_all()
+    assert all(p.dead for p in procs), "a say process was orphaned"
