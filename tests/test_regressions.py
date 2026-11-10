@@ -478,3 +478,72 @@ def test_failed_command_start_does_not_hijack_next_dictation(db, monkeypatch):
         pass
     assert c.command_next is False
     assert not c.lock.locked()
+
+
+# ------------------------------------------------------------ clipboard (m1)
+
+class _FakeData:  # stands in for NSData
+    def __init__(self, b): self.b = b
+
+
+class _FakeItem:
+    def __init__(self, d=None): self.d = dict(d or {})
+    @classmethod
+    def alloc(cls): return cls()
+    def init(self): return self
+    def types(self): return list(self.d)
+    def dataForType_(self, t): return self.d.get(t)
+    def setData_forType_(self, data, t): self.d[t] = data; return True
+
+
+class _FakePasteboard:
+    def __init__(self, items): self.items = items
+    def pasteboardItems(self): return self.items
+    def clearContents(self): self.items = []
+    def writeObjects_(self, objs): self.items = list(objs)
+
+
+def _fake_appkit(monkeypatch, pb):
+    import sys
+    import types
+    mod = types.ModuleType("AppKit")
+    mod.NSPasteboard = types.SimpleNamespace(generalPasteboard=lambda: pb)
+    mod.NSPasteboardItem = _FakeItem
+    monkeypatch.setitem(sys.modules, "AppKit", mod)
+
+
+def test_clipboard_image_survives_dictation_paste(db, monkeypatch):
+    import core
+    png = _FakeData(b"\x89PNG")
+    pb = _FakePasteboard([_FakeItem({"public.png": png, "public.tiff": _FakeData(b"t")})])
+    _fake_appkit(monkeypatch, pb)
+    monkeypatch.setattr(core.time, "sleep", lambda s: None)
+    # pbcopy stand-in: replaces the clipboard with plain text
+    monkeypatch.setattr(core, "set_clipboard", lambda t: setattr(
+        pb, "items", [_FakeItem({"public.utf8-plain-text": _FakeData(t.encode())})]))
+    c = core.Core()
+    c._type("hello")
+    assert len(pb.items) == 1
+    assert pb.items[0].d["public.png"] is png
+    assert set(pb.items[0].d) == {"public.png", "public.tiff"}
+
+
+def test_empty_clipboard_restores_to_empty(db, monkeypatch):
+    import core
+    pb = _FakePasteboard([])
+    _fake_appkit(monkeypatch, pb)
+    snap = core.save_clipboard()
+    pb.items = [_FakeItem({"public.utf8-plain-text": _FakeData(b"x")})]
+    core.restore_clipboard(snap)
+    assert pb.items == []
+
+
+def test_clipboard_without_appkit_falls_back_to_text(monkeypatch):
+    import sys
+    import core
+    monkeypatch.setitem(sys.modules, "AppKit", None)   # import raises
+    sent = []
+    monkeypatch.setattr(core, "get_clipboard", lambda: "old")
+    monkeypatch.setattr(core, "set_clipboard", sent.append)
+    core.restore_clipboard(core.save_clipboard())
+    assert sent == ["old"]

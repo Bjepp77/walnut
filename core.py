@@ -40,6 +40,51 @@ def set_clipboard(text: str) -> None:
     subprocess.run(["pbcopy"], input=text, text=True)
 
 
+def save_clipboard():
+    """Snapshot the whole clipboard so it can be put back untouched.
+
+    Through AppKit (PyObjC ships with rumps/pynput on macOS) every item and
+    every type is kept, so a copied image, file or rich text survives. Without
+    AppKit only plain text can be kept (pbpaste), which is the old behaviour.
+    """
+    try:
+        from AppKit import NSPasteboard
+    except ImportError:
+        return ("text", get_clipboard())
+    try:
+        items = []
+        for item in NSPasteboard.generalPasteboard().pasteboardItems() or []:
+            kept = {}
+            for t in item.types():
+                data = item.dataForType_(t)
+                if data is not None:
+                    kept[str(t)] = data
+            if kept:
+                items.append(kept)
+        return ("items", items)
+    except Exception as e:           # never let a clipboard quirk kill a paste
+        log(f"Could not snapshot the clipboard ({e}); keeping text only.")
+        return ("text", get_clipboard())
+
+
+def restore_clipboard(snap) -> None:
+    kind, payload = snap
+    if kind == "text":
+        set_clipboard(payload)
+        return
+    from AppKit import NSPasteboard, NSPasteboardItem
+    pb = NSPasteboard.generalPasteboard()
+    pb.clearContents()
+    new = []
+    for kept in payload:
+        item = NSPasteboardItem.alloc().init()
+        for t, data in kept.items():
+            item.setData_forType_(data, t)
+        new.append(item)
+    if new:
+        pb.writeObjects_(new)
+
+
 def _normalize(text: str) -> str:
     return re.sub(r"[^\w\s]", "", text).strip().lower()
 
@@ -139,7 +184,7 @@ class Core:
     def _copy_selection(self) -> str:
         from pynput.keyboard import Key
 
-        saved = get_clipboard()
+        saved = save_clipboard()
         try:
             set_clipboard("")
             time.sleep(0.30)  # let hotkey modifiers be released
@@ -149,7 +194,7 @@ class Core:
             time.sleep(0.30)
             return get_clipboard()
         finally:
-            set_clipboard(saved)   # restore even if the copy raises
+            restore_clipboard(saved)   # restore even if the copy raises
 
     def speak(self, text: str, record_history: bool = True) -> None:
         self.stop_all()
@@ -365,7 +410,7 @@ class Core:
     def _type(self, text: str) -> None:
         from pynput.keyboard import Key
 
-        saved = get_clipboard()
+        saved = save_clipboard()
         try:
             set_clipboard(text)
             time.sleep(0.25)   # slower apps read the clipboard late; 0.15 dropped pastes
@@ -374,7 +419,7 @@ class Core:
                 self.kb.release("v")
             time.sleep(0.75)   # let the paste land before the clipboard is restored
         finally:
-            set_clipboard(saved)   # never strand the transcript in the clipboard
+            restore_clipboard(saved)   # never strand the transcript in the clipboard
 
 
 class HotkeyManager:
