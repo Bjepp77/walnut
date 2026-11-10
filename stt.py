@@ -104,6 +104,12 @@ def canonical(model: str) -> str:
     return model if model in _BY_ID else default_model()
 
 
+def is_known(model: str) -> bool:
+    """True for a catalog id or a legacy alias that canonical() maps onto one."""
+    model = (model or "").strip()
+    return _LEGACY.get(model, model) in _BY_ID
+
+
 def default_model(backend: str | None = None) -> str:
     """Big model where it's cheap (GPU), small where it isn't (CPU)."""
     backend = backend or (MLX if is_apple_silicon() else FASTER)

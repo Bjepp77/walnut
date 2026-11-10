@@ -678,3 +678,22 @@ def test_good_bodies_still_work(client, db):
     assert client.post("/api/words", json={"word": "Walnut"}).status_code == 200
     assert client.post("/api/words").status_code in (200, 415)   # unchanged: no body
     assert [w["word"] for w in db.words_list()] == ["Walnut"]
+
+
+# ------------------------------------------------------------ stt_model (m7)
+
+def test_unknown_stt_model_is_rejected(client, db):
+    before = db.get("stt_model")
+    r = client.put("/api/settings", json={"stt_model": "large-v3-trubo"})
+    assert r.status_code == 400
+    assert "unknown speech model" in r.get_json()["error"]
+    assert db.get("stt_model") == before
+
+
+def test_known_and_legacy_stt_model_names_still_work(db):
+    import stt
+    for m in stt._BY_ID:
+        assert db.validate_setting("stt_model", m) == m
+    for old, new in stt._LEGACY.items():
+        assert db.validate_setting("stt_model", old) == stt.canonical(old)
+    assert db.validate_setting("stt_model", "") == stt.default_model()

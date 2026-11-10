@@ -200,6 +200,13 @@ def _is_loopback(host: str) -> bool:
         return False
 
 
+def _stt_model(v: str) -> str:
+    v = v.strip()
+    if v and not stt_backend.is_known(v):     # blank = let Walnut choose
+        raise ValueError(f"unknown speech model {v!r}")
+    return stt_backend.canonical(v)
+
+
 def _voice(v: str) -> str:
     if len(v) > 100:
         raise ValueError("voice name too long")
@@ -211,7 +218,7 @@ VALIDATORS = {
     "typing_wpm": _int_in(5, 300),
     "recordings_keep": _int_in(0, 500),
     "port": _int_in(1024, 65535),
-    "stt_model": lambda v: stt_backend.canonical(v),
+    "stt_model": _stt_model,
     "stt_backend": _one_of("auto", stt_backend.MLX, stt_backend.FASTER),
     "stt_language": _language,
     "snippets_enabled": _one_of("0", "1"),
