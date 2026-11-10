@@ -697,3 +697,26 @@ def test_known_and_legacy_stt_model_names_still_work(db):
     for old, new in stt._LEGACY.items():
         assert db.validate_setting("stt_model", old) == stt.canonical(old)
     assert db.validate_setting("stt_model", "") == stt.default_model()
+
+
+# ------------------------------------------------------------ console bridge (m11)
+
+def test_console_bridge_posts_to_the_configured_url(db, monkeypatch):
+    import io
+    import json
+    import console_bridge
+
+    db.set_setting("console_url", "https://console.example.com/")
+    seen = []
+
+    def fake_urlopen(req, timeout=None):
+        seen.append(req)
+        return io.BytesIO(json.dumps({"id": None, "target": "vet-skill"}).encode())
+
+    monkeypatch.setattr(console_bridge.urllib.request, "urlopen", fake_urlopen)
+    spoken = []
+    console_bridge.handle("  run the vet skill. ", spoken.append)
+    assert seen[0].full_url == "https://console.example.com/api/run"
+    assert seen[0].get_method() == "POST"
+    assert json.loads(seen[0].data) == {"input": "run the vet skill"}
+    assert spoken == ["Running vet skill."]
