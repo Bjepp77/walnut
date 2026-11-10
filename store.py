@@ -337,9 +337,18 @@ def history_get(hid: int) -> dict | None:
     return dict(row) if row else None
 
 
+def _inside_recordings(path) -> bool:
+    """True only for a path that really lives under the recordings folder."""
+    try:
+        return Path(path).resolve().is_relative_to(RECORDINGS.resolve())
+    except (OSError, ValueError):
+        return False
+
+
 def history_delete(hid: int) -> None:
     entry = history_get(hid)
-    if entry and entry.get("audio_path"):
+    # A row is data, not a licence to delete: only unlink our own recordings.
+    if entry and entry.get("audio_path") and _inside_recordings(entry["audio_path"]):
         Path(entry["audio_path"]).unlink(missing_ok=True)
     with _conn() as c:
         c.execute("DELETE FROM history WHERE id=?", (hid,))
@@ -401,7 +410,9 @@ def prune_recordings(keep: int | None = None, now: float | None = None) -> int:
         return removed
 
     known = protected | {Path(p).resolve() for p in superseded}
-    for f in RECORDINGS.glob("*.wav"):
+    # Only files named the way _save_audio() names them: anything else in this
+    # folder was put there by the user and is not ours to sweep.
+    for f in RECORDINGS.glob("dictation-*.wav"):
         if f.resolve() in known:
             continue
         try:

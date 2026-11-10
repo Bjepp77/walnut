@@ -185,11 +185,36 @@ def test_prune_sweeps_old_orphan_files(db):
     nothing points at. Once it's older than the grace window, it goes."""
     import time
 
-    _wav(db, "orphan.wav")
-    db.history_add("dictation", "kept", 1.0, audio_path=_wav(db, "kept.wav"))
+    _wav(db, "dictation-20200101-000000.wav")
+    db.history_add("dictation", "kept", 1.0, audio_path=_wav(db, "dictation-kept.wav"))
     later = time.time() + db.ORPHAN_GRACE_SECS + 1
     assert db.prune_recordings(keep=3, now=later) == 1
-    assert [p.name for p in db.RECORDINGS.glob("*.wav")] == ["kept.wav"]
+    assert [p.name for p in db.RECORDINGS.glob("*.wav")] == ["dictation-kept.wav"]
+
+
+def test_sweep_leaves_files_that_are_not_ours(db):
+    import time
+
+    mine = _wav(db, "dictation-20200101-000000.wav")
+    theirs = _wav(db, "my-voice-memo.wav")
+    later = time.time() + db.ORPHAN_GRACE_SECS + 1
+    assert db.prune_recordings(keep=3, now=later) == 1
+    assert not Path(mine).exists() and Path(theirs).exists()
+
+
+def test_history_delete_only_unlinks_inside_recordings(db, tmp_path):
+    outside = tmp_path / "precious.wav"
+    outside.write_bytes(b"RIFF")
+    sneaky = str(db.RECORDINGS / ".." / "precious.wav")   # resolves outside
+    inside = _wav(db, "dictation-x.wav")
+    a = db.history_add("dictation", "a", 1.0, audio_path=str(outside))
+    b = db.history_add("dictation", "b", 1.0, audio_path=sneaky)
+    c = db.history_add("dictation", "c", 1.0, audio_path=inside)
+    for hid in (a, b, c):
+        db.history_delete(hid)
+    assert outside.exists()
+    assert not Path(inside).exists()
+    assert db.history_get(a) is None and db.history_get(c) is None
 
 
 def test_prune_does_not_delete_a_dictation_still_being_saved(db):
