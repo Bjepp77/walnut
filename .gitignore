@@ -1,5 +1,8 @@
 # local data — personal history, recordings, settings live here
 walnut.db
+walnut.db-wal
+walnut.db-shm
+walnut.db-journal
 recordings/
 .selftest.wav
 *.log
