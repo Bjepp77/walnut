@@ -231,7 +231,13 @@ class Core:
                 self._stop_and_type()
             else:
                 self.command_next = True
-                self._start_recording()
+                try:
+                    self._start_recording()
+                finally:
+                    # No recording means _stop_and_type will never reset the
+                    # flag, and the next plain dictation would go to the Console.
+                    if not self.recording():
+                        self.command_next = False
         finally:
             self.lock.release()
 

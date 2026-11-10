@@ -438,3 +438,43 @@ def test_a_truly_dead_microphone_fails_cleanly(db, monkeypatch):
     assert c.stream is None and not c.recording()
     assert states[-1] == "idle"
     assert all(s.closed for s in fake.streams), "half-open streams left behind"
+
+
+def test_origin_must_be_exactly_loopback(client):
+    """startswith() let http://localhost.evil.com and http://127.0.0.1.evil.com
+    through. The hostname must match exactly; the port may be anything."""
+    for bad in ("http://localhost.evil.com", "http://127.0.0.1.evil.com",
+                "http://localhost.evil.com:8080", "https://evil.com"):
+        r = client.post("/api/speech/stop", headers={"Origin": bad})
+        assert r.status_code == 403, bad
+    for good in ("http://localhost:5000", "http://127.0.0.1:5000",
+                 "http://[::1]:5000", "http://localhost"):
+        r = client.post("/api/speech/stop", headers={"Origin": good})
+        assert r.status_code == 200, good
+
+
+def test_failed_command_start_does_not_hijack_next_dictation(db, monkeypatch):
+    """If the Console-command hotkey cannot start recording, command_next must
+    not stay set, or the next plain dictation is sent to the Console."""
+    import core
+
+    monkeypatch.setattr(core, "play_sound", lambda *a, **k: None)
+    fake = _FakeSD(heal_on_reinit=False)
+    _install_fake_sd(monkeypatch, fake)
+    c = core.Core()
+    c.on_state = lambda s: None
+
+    c.toggle_command()                       # mic open fails (both tries)
+    assert not c.recording()
+    assert c.command_next is False
+
+    # a raised error on the start path must clear it too
+    def boom():
+        raise RuntimeError("no audio stack")
+    monkeypatch.setattr(c, "_start_recording", boom)
+    try:
+        c.toggle_command()
+    except RuntimeError:
+        pass
+    assert c.command_next is False
+    assert not c.lock.locked()
