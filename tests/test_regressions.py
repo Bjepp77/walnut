@@ -653,3 +653,28 @@ def test_console_url_refusal_is_a_400_with_a_clear_message(client):
     r = client.put("/api/settings", json={"console_url": "http://example.com"})
     assert r.status_code == 400
     assert "https" in r.get_json()["error"]
+
+
+# ------------------------------------------------------------ bad bodies (m6)
+
+@pytest.mark.parametrize("method,url,body", [
+    ("post", "/api/words", {"word": 5}),
+    ("post", "/api/words", [1, 2]),
+    ("post", "/api/replacements", {"wrong": 1, "right": "x"}),
+    ("post", "/api/replacements", ["a"]),
+    ("post", "/api/snippets", {"trigger": ["a"], "expansion": "x"}),
+    ("post", "/api/snippets", ["a"]),
+    ("put", "/api/snippets/1", ["a"]),
+    ("put", "/api/settings", ["a"]),
+    ("put", "/api/settings", {"tts_rate": "inf"}),
+    ("put", "/api/settings", {"tts_rate": 1e999}),
+    ("post", "/api/test-voice", {"text": 5}),
+])
+def test_bad_bodies_are_400_not_500(client, method, url, body):
+    assert getattr(client, method)(url, json=body).status_code == 400
+
+
+def test_good_bodies_still_work(client, db):
+    assert client.post("/api/words", json={"word": "Walnut"}).status_code == 200
+    assert client.post("/api/words").status_code in (200, 415)   # unchanged: no body
+    assert [w["word"] for w in db.words_list()] == ["Walnut"]

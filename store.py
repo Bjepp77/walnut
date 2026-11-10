@@ -141,7 +141,10 @@ def _seed_from_config() -> None:
 
 def _int_in(lo: int, hi: int):
     def check(v: str) -> str:
-        n = int(float(v))         # accept "210" and "210.0"
+        try:
+            n = int(float(v))     # accept "210" and "210.0"
+        except OverflowError:     # "inf", "1e999"
+            raise ValueError(f"must be between {lo} and {hi}")
         if not lo <= n <= hi:
             raise ValueError(f"must be between {lo} and {hi}")
         return str(n)

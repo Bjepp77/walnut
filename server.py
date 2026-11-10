@@ -71,6 +71,23 @@ def _int_arg(name: str, default: int) -> int:
         raise ValueError(f"{name} must be an integer, got {raw!r}")
 
 
+def _body() -> dict:
+    """The JSON request body, which must be an object. Anything else is a 400."""
+    d = request.json
+    if d is None:
+        return {}
+    if not isinstance(d, dict):
+        raise ValueError("request body must be a JSON object")
+    return d
+
+
+def _text_field(d: dict, name: str, default: str = "") -> str:
+    v = d.get(name, default)
+    if not isinstance(v, str):
+        raise ValueError(f"{name} must be text")
+    return v
+
+
 @app.route("/")
 def index():
     return send_from_directory(app.static_folder, "index.html")
@@ -91,7 +108,7 @@ def dashboard():
 @app.route("/api/words", methods=["GET", "POST"])
 def words():
     if request.method == "POST":
-        w = (request.json or {}).get("word", "").strip()
+        w = _text_field(_body(), "word").strip()
         if w:
             store.words_add(w)
     return jsonify(store.words_list())
@@ -106,9 +123,10 @@ def words_delete(wid):
 @app.route("/api/replacements", methods=["GET", "POST"])
 def replacements():
     if request.method == "POST":
-        d = request.json or {}
-        if d.get("wrong", "").strip() and d.get("right", "").strip():
-            store.replacements_add(d["wrong"], d["right"])
+        d = _body()
+        wrong, right = _text_field(d, "wrong"), _text_field(d, "right")
+        if wrong.strip() and right.strip():
+            store.replacements_add(wrong, right)
     return jsonify(store.replacements_list())
 
 
@@ -123,9 +141,10 @@ def replacements_delete(rid):
 @app.route("/api/snippets", methods=["GET", "POST"])
 def snippets():
     if request.method == "POST":
-        d = request.json or {}
-        if d.get("trigger", "").strip() and d.get("expansion", "").strip():
-            store.snippets_add(d["trigger"], d["expansion"])
+        d = _body()
+        trigger, expansion = _text_field(d, "trigger"), _text_field(d, "expansion")
+        if trigger.strip() and expansion.strip():
+            store.snippets_add(trigger, expansion)
     return jsonify({
         "enabled": store.get("snippets_enabled") == "1",
         "snippets": store.snippets_list(),
@@ -137,7 +156,7 @@ def snippet_item(sid):
     if request.method == "DELETE":
         store.snippets_delete(sid)
     else:
-        d = request.json or {}
+        d = _body()
         trigger = str(d.get("trigger", "")).strip()
         expansion = str(d.get("expansion", ""))
         if not trigger or not expansion:
@@ -219,7 +238,7 @@ def history_reveal(hid):
 @app.route("/api/settings", methods=["GET", "PUT"])
 def settings():
     if request.method == "PUT":
-        d = request.json or {}
+        d = _body()
 
         # Validate the whole payload before writing any of it. Previously a bad
         # value was persisted and only then interpreted: an unparseable hotkey
@@ -301,10 +320,10 @@ def voices_open():
 @app.route("/api/test-voice", methods=["POST"])
 def test_voice():
     if CORE:
-        d = request.json or {}
+        text = _text_field(_body(), "text", "Walnut here. This is how I sound.")
         threading.Thread(
             target=CORE.speak,
-            args=(d.get("text", "Walnut here. This is how I sound."), False),
+            args=(text, False),
             daemon=True).start()
     return jsonify({"ok": True})
 
